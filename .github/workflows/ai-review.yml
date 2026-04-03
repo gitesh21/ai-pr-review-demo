@@ -1,0 +1,48 @@
+name: AI PR Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git diff origin/main...HEAD > diff.txt
+          echo "diff<<EOF" >> $GITHUB_OUTPUT
+          cat diff.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: AI Review via Groq
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          DIFF=$(cat diff.txt)
+          RESPONSE=$(curl -s https://api.groq.com/openai/v1/chat/completions \
+            -H "Authorization: Bearer $GROQ_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"model\": \"llama3-8b-8192\",
+              \"messages\": [{
+                \"role\": \"user\",
+                \"content\": \"You are a senior code reviewer. Review this PR diff and give concise feedback on code quality, bugs, and improvements:\\n\\n$DIFF\"
+              }],
+              \"max_tokens\": 500
+            }")
+          COMMENT=$(echo $RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['choices'][0]['message']['content'])")
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"body\": \"## AI Review\\n\\n$COMMENT\"}" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments"
